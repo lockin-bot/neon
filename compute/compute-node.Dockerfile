@@ -1625,6 +1625,63 @@ RUN make install USE_PGXS=1 -j $(getconf _NPROCESSORS_ONLN)
 
 #########################################################################################
 #
+# Layer "pg_mtcute-build"
+# compile pg_mtcute extension (MTProto/Telegram binary parser)
+# Requires yyjson C library (built from source, static)
+#
+#########################################################################################
+FROM build-deps AS pg_mtcute-src
+ARG PG_VERSION
+
+# PG17 only
+# yyjson v0.12.0 - Dec 18, 2024
+# pg_mtcute v0.28.0 (lockin-bot/mtcute-fork, private repo - tarball pre-downloaded)
+WORKDIR /ext-src
+COPY compute/pg_mtcute-v0.28.0.tar.gz /ext-src/pg_mtcute.tar.gz
+RUN case "${PG_VERSION:?}" in \
+      "v17") true ;; \
+      *) echo "pg_mtcute: skipping for ${PG_VERSION}" && mkdir -p /ext-src/pg_mtcute-src && exit 0 ;; \
+    esac && \
+    wget https://github.com/ibireme/yyjson/archive/refs/tags/0.12.0.tar.gz -O yyjson.tar.gz && \
+    echo "b16246f617b2a136c78d73e5e2647c6f1de1313e46678062985bdcf1f40bb75d yyjson.tar.gz" | sha256sum --check && \
+    mkdir yyjson-src && cd yyjson-src && tar xzf ../yyjson.tar.gz --strip-components=1 -C . && \
+    cd .. && \
+    echo "990021c5f387a7de09aed34b3b58b08c0bc2a1feece1498d6157e3a46aa40957 pg_mtcute.tar.gz" | sha256sum --check && \
+    mkdir pg_mtcute-src && cd pg_mtcute-src && tar xzf ../pg_mtcute.tar.gz --strip-components=1 -C .
+
+FROM pg-build AS pg_mtcute-build
+ARG PG_VERSION
+COPY --from=pg_mtcute-src /ext-src/ /ext-src/
+
+# Build yyjson (static, with PIC for linking into shared object)
+WORKDIR /ext-src/yyjson-src
+RUN case "${PG_VERSION:?}" in \
+      "v17") true ;; \
+      *) exit 0 ;; \
+    esac && \
+    mkdir -p build && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+             -DBUILD_SHARED_LIBS=OFF \
+             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+             -DYYJSON_BUILD_TESTS=OFF \
+             -DYYJSON_BUILD_FUZZER=OFF \
+             -DYYJSON_BUILD_MISC=OFF \
+             -DCMAKE_BUILD_TYPE=Release && \
+    make -j $(getconf _NPROCESSORS_ONLN) && \
+    make install
+
+# Build pg_mtcute extension
+WORKDIR /ext-src/pg_mtcute-src/pg-tl-c/extensions
+RUN case "${PG_VERSION:?}" in \
+      "v17") true ;; \
+      *) exit 0 ;; \
+    esac && \
+    make -j $(getconf _NPROCESSORS_ONLN) && \
+    make install && \
+    echo 'trusted = true' >> /usr/local/pgsql/share/extension/pg_mtcute.control
+
+#########################################################################################
+#
 # Layer "neon-ext-build"
 # compile neon extensions
 #
@@ -1712,6 +1769,7 @@ COPY --from=pg_duckdb-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pg_repack-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pgaudit-build /usr/local/pgsql/ /usr/local/pgsql/
 COPY --from=pgauditlogtofile-build /usr/local/pgsql/ /usr/local/pgsql/
+COPY --from=pg_mtcute-build /usr/local/pgsql/ /usr/local/pgsql/
 
 #########################################################################################
 #
